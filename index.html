@@ -85,7 +85,7 @@ textarea{
 width:100%;min-height:80px;resize:none;border:none;outline:none;
 background:rgba(255,255,255,.04);border:1px solid var(--line);
 border-radius:12px;padding:13px 14px;color:var(--ink);
-font:inherit;font-size:15px;line-height:1.6;transition:border-color .2s,background .2s;
+font:inherit;font-size:16px;line-height:1.6;transition:border-color .2s,background .2s;
 }
 #lesson{min-height:62px;}
 textarea::placeholder{color:var(--ink-faint);}
@@ -101,6 +101,7 @@ box-shadow:0 6px 16px -8px var(--glow-deep);transition:transform .12s,filter .2s
 }
 .save:active{transform:translateY(1px);}
 .save:disabled{opacity:.4;cursor:default;box-shadow:none;filter:grayscale(.3);}
+.save.danger{background:none;border:1px solid var(--rose);color:var(--rose);box-shadow:none;}
 .saved-flash{position:absolute;inset:0;background:radial-gradient(closest-side,rgba(243,182,92,.22),transparent 70%);opacity:0;pointer-events:none;}
 @keyframes flash{0%{opacity:0;}25%{opacity:1;}100%{opacity:0;}}
 .saved-flash.go{animation:flash .9s ease-out;}
@@ -129,6 +130,16 @@ box-shadow:0 6px 16px -8px var(--glow-deep);transition:transform .12s,filter .2s
 .cell.lit::after{content:"";position:absolute;inset:0;border-radius:11px;box-shadow:0 0 0 0 rgba(243,182,92,.5);animation:pulse 2.6s ease-out infinite;}
 }
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(243,182,92,.45);}70%{box-shadow:0 0 0 7px rgba(243,182,92,0);}100%{box-shadow:0 0 0 0 rgba(243,182,92,0);}}
+/* omikuji: past luck resurfaced */
+.omi{margin-top:18px;background:linear-gradient(180deg,var(--panel) 0%,var(--bg2) 100%);border:1px solid var(--line);border-left:3px solid rgba(243,182,92,.45);border-radius:14px;padding:14px 15px;}
+.omi-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.omi-lbl{font-family:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;font-size:13px;color:var(--glow);letter-spacing:.12em;}
+.omi-btn{background:none;border:1px solid var(--line);color:var(--ink-soft);border-radius:8px;padding:4px 10px;font:inherit;font-size:11px;letter-spacing:.04em;cursor:pointer;transition:.18s;}
+.omi-btn:hover{border-color:var(--glow-deep);color:var(--glow);}
+.omi-btn:active{transform:translateY(1px);}
+.omi-body{display:block;width:100%;text-align:left;background:none;border:none;color:var(--ink);font:inherit;cursor:pointer;padding:0;}
+.omi-date{font-size:11.5px;color:var(--ink-soft);letter-spacing:.04em;margin-bottom:4px;}
+.omi-text{font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;}
 /* lists */
 .list-title{font-family:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;font-size:16px;letter-spacing:.08em;margin:2px 2px 14px;color:var(--ink);}
 .list-title .n{font-size:12px;color:var(--ink-faint);font-family:inherit;margin-left:8px;}
@@ -149,6 +160,7 @@ border-radius:11px;padding:11px 12px;font:inherit;font-size:12.5px;letter-spacin
 .bk:active{transform:translateY(1px);}
 .foot{text-align:center;font-size:10.5px;color:var(--ink-faint);margin-top:14px;letter-spacing:.06em;line-height:1.7;}
 .foot b{color:var(--ink-soft);font-weight:600;}
+.foot .warn{color:var(--glow);}
 [hidden]{display:none!important;}
 *:focus-visible{outline:2px solid var(--glow);outline-offset:2px;}
 </style>
@@ -205,6 +217,17 @@ border-radius:11px;padding:11px 12px;font:inherit;font-size:12.5px;letter-spacin
 </div>
 <div class="grid" id="grid"></div>
 </section>
+
+<section class="omi" id="omikuji" hidden>
+<div class="omi-top">
+<span class="omi-lbl" id="omiLbl">あの日の灯り</span>
+<button class="omi-btn" id="omiRedraw" type="button">引きなおす</button>
+</div>
+<button class="omi-body" id="omiBody" type="button" aria-label="この日をひらく">
+<div class="omi-date" id="omiDate"></div>
+<div class="omi-text" id="omiText"></div>
+</button>
+</section>
 </div>
 
 <!-- ===== 運の一覧ビュー ===== -->
@@ -225,44 +248,95 @@ border-radius:11px;padding:11px 12px;font:inherit;font-size:12.5px;letter-spacin
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 </div>
 
-<div class="foot" id="foot">
-記録はこの端末のなかだけに残ります。<br><b>誰にも共有されません。</b>
-</div>
+<div class="foot" id="foot"></div>
 </div>
 
 <script>
-// ---- storage: tries 3 layers so data survives in the most contexts ----
-// 1) window.storage … チャット内アーティファクトの保存領域
-// 2) localStorage … 端末でファイルとして開いたときの保存領域（閉じても残る）
-// 3) memory … 上2つが使えない時の最後の保険（閉じると消える）
-// ※ キーもデータ構造も従来どおり。各日 = {text:運, lesson:教訓, ts}
-//    既存データは text のみ → そのまま運として読まれる（教訓は空扱い）
+// ---- storage: localStorage + IndexedDB の二重保存 ----
+// iOS Safari は使わない期間が続くと localStorage を消すことがあるので、
+// より消えにくい IndexedDB にも同じデータを常に書く。読むときは両方を
+// 突き合わせて、日付ごとに新しい方 (ts) を採用 → 片方が欠けても復元される。
+// キーもデータ構造も従来どおり。各日 = {text:運, lesson:教訓, ts}
 const KEY="ichinichi-ichiun-entries";
-let memCache=null;
+const EXP_KEY="ichinichi-ichiun-lastexport";
+const DB_NAME="ichinichi-ichiun", DB_STORE="kv";
+
+function idbOpen(){
+return new Promise((res,rej)=>{
+const q=indexedDB.open(DB_NAME,1);
+q.onupgradeneeded=()=>q.result.createObjectStore(DB_STORE);
+q.onsuccess=()=>res(q.result);
+q.onerror=()=>rej(q.error);
+});
+}
+async function idbGet(k){
+try{
+const db=await idbOpen();
+return await new Promise((res,rej)=>{
+const r=db.transaction(DB_STORE).objectStore(DB_STORE).get(k);
+r.onsuccess=()=>res(r.result);
+r.onerror=()=>rej(r.error);
+});
+}catch(e){return null;}
+}
+async function idbSet(k,v){
+try{
+const db=await idbOpen();
+await new Promise((res,rej)=>{
+const t=db.transaction(DB_STORE,"readwrite");
+t.objectStore(DB_STORE).put(v,k);
+t.oncomplete=res;
+t.onerror=()=>rej(t.error);
+});
+}catch(e){}
+}
+function mergeEntries(a,b){
+const out={...a};
+for(const k in b){
+const x=out[k],y=b[k];
+if(!x||(y.ts||0)>(x.ts||0))out[k]=y;
+}
+return out;
+}
 async function storeGet(){
-try{ if(window.storage){const r=await window.storage.get(KEY);
-if(r&&r.value){const o=JSON.parse(r.value); if(Object.keys(o).length) return o;}} }catch(e){}
-try{ const v=localStorage.getItem(KEY);
-if(v){const o=JSON.parse(v); if(Object.keys(o).length) return o;} }catch(e){}
-return memCache?JSON.parse(memCache):{};
+let ls={},idb={};
+try{const v=localStorage.getItem(KEY);if(v)ls=JSON.parse(v)||{};}catch(e){}
+try{const v=await idbGet(KEY);if(v)idb=JSON.parse(v)||{};}catch(e){}
+const merged=mergeEntries(ls,idb);
+if(Object.keys(merged).length)await storeSet(merged); // 片方が欠けてたら埋め戻す
+return merged;
 }
 async function storeSet(obj){
-const s=JSON.stringify(obj); memCache=s;
-try{ localStorage.setItem(KEY,s); }catch(e){}
-try{ if(window.storage){await window.storage.set(KEY,s);} }catch(e){}
+const s=JSON.stringify(obj);
+try{localStorage.setItem(KEY,s);}catch(e){}
+await idbSet(KEY,s);
 }
 
 // ---- date helpers (local time, no tz drift) ----
-const todayKey=(()=>{const d=new Date();return fmt(d);})();
 function fmt(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
 function parse(k){const[a,b,c]=k.split("-").map(Number);return new Date(a,b-1,c);}
 function addDays(k,n){const d=parse(k);d.setDate(d.getDate()+n);return fmt(d);}
 
+let todayKey=fmt(new Date()); // 日付またぎで更新される (refreshToday)
 let entries={};
 let viewY, viewM;       // calendar shown month
 let selected=todayKey;  // which day the card edits
 const $=id=>document.getElementById(id);
 const luckTA=()=>$("luck"), lessonTA=()=>$("lesson");
+
+// ホーム画面アプリは開きっぱなしで日付が変わることが多いので、
+// 復帰のたびに「今日」を取り直す (旧版は開いた瞬間の日付に固定されていた)
+function refreshToday(){
+const t=fmt(new Date());
+if(t===todayKey)return;
+const old=todayKey;
+todayKey=t;
+if(selected===old&&!luckTA().value.trim()&&!lessonTA().value.trim()){
+selected=t;
+const d=parse(t);viewY=d.getFullYear();viewM=d.getMonth();
+}
+renderStreak();renderCard();renderCal();renderFoot();
+}
 
 function jpDate(k){
 const d=parse(k);const w="日月火水木金土"[d.getDay()];
@@ -296,7 +370,6 @@ lessonTA().value = e?.lesson || "";
 luckTA().disabled = isFuture;
 lessonTA().disabled = isFuture;
 $("card").classList.toggle("lit",!!e?.text);
-$("saveBtn").textContent = e?.text ? "灯しなおす" : "灯す";
 updateBtn();
 if(isFuture){$("hint").textContent="まだ来てへん日やで";}
 else if(e?.text&&e?.lesson){$("hint").textContent="灯ってる ◍ ／ 教訓あり";}
@@ -306,14 +379,24 @@ else{$("hint").textContent="";}
 }
 
 function updateBtn(){
-const fut=luckTA().disabled;
+const fut=selected>todayKey;
 const l=luckTA().value.trim();
 const m=lessonTA().value.trim();
 const cl=entries[selected]?.text||"";
 const cm=entries[selected]?.lesson||"";
 const changed=(l!==cl)||(m!==cm);
 const hasContent=(l!=="")||(m!=="");
-$("saveBtn").disabled = fut || !changed || !hasContent;
+const btn=$("saveBtn");
+if(entries[selected]&&!hasContent){
+// 記録がある日を空にして保存 = その日の記録を消す
+btn.textContent="灯を消す";
+btn.classList.add("danger");
+btn.disabled = fut || !changed;
+}else{
+btn.textContent = entries[selected]?.text ? "灯しなおす" : "灯す";
+btn.classList.remove("danger");
+btn.disabled = fut || !changed || !hasContent;
+}
 }
 
 function renderCal(){
@@ -347,6 +430,33 @@ const now=new Date();
 $("next").disabled = (viewY>now.getFullYear()||(viewY===now.getFullYear()&&viewM>=now.getMonth()));
 }
 
+// ---- omikuji: 過去の運をひとつ掘り起こして見せる ----
+function omiKeys(){
+return Object.keys(entries).filter(k=>k<todayKey&&entries[k]?.text&&String(entries[k].text).trim()!=="");
+}
+function showOmi(k,label){
+$("omiLbl").textContent=label;
+$("omiDate").textContent=jpDateFull(k);
+$("omiText").textContent=entries[k].text;
+$("omikuji").dataset.key=k;
+}
+function renderOmikuji(){
+const keys=omiKeys();
+const box=$("omikuji");
+if(!keys.length){box.hidden=true;return;}
+box.hidden=false;
+const lastYear=(Number(todayKey.slice(0,4))-1)+todayKey.slice(4);
+if(entries[lastYear]?.text){showOmi(lastYear,"一年前の今日");return;}
+showOmi(keys[Math.floor(Math.random()*keys.length)],"あの日の灯り");
+}
+function redrawOmikuji(){
+const keys=omiKeys();
+if(!keys.length)return;
+const cur=$("omikuji").dataset.key;
+const pool=keys.length>1?keys.filter(k=>k!==cur):keys;
+showOmi(pool[Math.floor(Math.random()*pool.length)],"あの日の灯り");
+}
+
 // ---- list views ----
 function renderLists(){
 renderList("luckList","text","まだ灯した日がないで。\n今夜ひとつ灯そか。","luckCount");
@@ -367,13 +477,14 @@ item.className="litem";item.type="button";
 const dd=document.createElement("div");dd.className="d";dd.textContent=jpDateFull(k);
 const tt=document.createElement("div");tt.className="t";tt.textContent=entries[k][field];
 item.appendChild(dd);item.appendChild(tt);
-item.onclick=()=>{
+item.onclick=()=>{openDay(k);};
+wrap.appendChild(item);
+}
+}
+function openDay(k){
 selected=k;const t=parse(k);viewY=t.getFullYear();viewM=t.getMonth();
 switchView("home");renderCard();renderCal();
 window.scrollTo({top:0,behavior:"smooth"});
-};
-wrap.appendChild(item);
-}
 }
 
 function switchView(v){
@@ -387,29 +498,72 @@ if(v!=="home")renderLists();
 async function save(){
 const l=luckTA().value.trim();
 const m=lessonTA().value.trim();
-if(!l&&!m)return;
-const prev=entries[selected]||{};
+if(!l&&!m){
+// 空で保存 = その日の記録を消す
+if(!entries[selected])return;
+delete entries[selected];
+await storeSet(entries);
+renderStreak();renderCard();renderCal();renderLists();renderOmikuji();renderFoot();
+flashFoot("消した。またいつでも灯せるで");
+return;
+}
 entries[selected]={text:l,lesson:m,ts:Date.now()};
 await storeSet(entries);
 $("card").classList.toggle("lit",!!l);
 const f=$("flash");f.classList.remove("go");void f.offsetWidth;f.classList.add("go");
-renderStreak();renderCard();renderCal();renderLists();
+renderStreak();renderCard();renderCal();renderLists();renderFoot();
+if($("omikuji").hidden)renderOmikuji();
 }
 
+// ---- footer: プライバシー表記 + バックアップの鮮度 ----
+function renderFoot(){
+let s='記録はこの端末のなかだけに残ります。<br><b>誰にも共有されません。</b>';
+const n=Object.keys(entries).length;
+if(n>=5){
+const last=Number(localStorage.getItem(EXP_KEY))||0;
+if(!last){
+s+='<br><span class="warn">まだ一度もバックアップしてへんよ。下から書き出しとこ。</span>';
+}else{
+const days=Math.floor((Date.now()-last)/86400000);
+if(days>=14)s+=`<br><span class="warn">最後のバックアップから${days}日。そろそろ書き出しとこ。</span>`;
+else s+=`<br>最後のバックアップ：${days===0?"今日":days+"日前"}`;
+}
+}
+$("foot").innerHTML=s;
+}
 function flashFoot(msg){
-const f=$("foot");const old=f.innerHTML;
+const f=$("foot");
 f.innerHTML="<b style='color:var(--glow)'>"+msg+"</b>";
-setTimeout(()=>{f.innerHTML=old;},2200);
+clearTimeout(flashFoot._t);
+flashFoot._t=setTimeout(renderFoot,2200);
 }
 
-function exportData(){
-const blob=new Blob([JSON.stringify(entries,null,2)],{type:"application/json"});
+function markExported(){
+try{localStorage.setItem(EXP_KEY,String(Date.now()));}catch(e){}
+flashFoot("書き出した ✓ 大事に持っときや");
+}
+async function exportData(){
+const json=JSON.stringify(entries,null,2);
+const name="ichinichi-ichiun_"+todayKey+".json";
+// iOS: 共有シートを開く → 「"ファイル"に保存」で iCloud Drive / 端末に置ける
+try{
+const file=new File([json],name,{type:"application/json"});
+if(navigator.canShare&&navigator.canShare({files:[file]})){
+await navigator.share({files:[file],title:"一日一運 バックアップ"});
+markExported();
+return;
+}
+}catch(e){
+if(e&&e.name==="AbortError")return; // 共有シートを閉じただけ。保存扱いにしない
+}
+// 共有シートが使えない環境はふつうのダウンロード
+const blob=new Blob([json],{type:"application/json"});
 const url=URL.createObjectURL(blob);
 const a=document.createElement("a");
-a.href=url;a.download="ichinichi-ichiun_"+todayKey+".json";
+a.href=url;a.download=name;
 document.body.appendChild(a);a.click();a.remove();
 setTimeout(()=>URL.revokeObjectURL(url),1000);
-flashFoot("書き出した ✓ 大事に持っときや");
+markExported();
 }
 
 function importData(file){
@@ -429,7 +583,7 @@ added++;
 }
 }
 await storeSet(entries);
-renderStreak();renderCard();renderCal();renderLists();
+renderStreak();renderCard();renderCal();renderLists();renderOmikuji();renderFoot();
 flashFoot(added+"件 読み込んだ ✓");
 }catch(e){ flashFoot("読み込めへんかった。ファイル確認して"); }
 };
@@ -451,12 +605,19 @@ $("importFile").onchange=e=>{if(e.target.files[0])importData(e.target.files[0]);
 $("tab-home").onclick=()=>switchView("home");
 $("tab-luck").onclick=()=>switchView("luck");
 $("tab-lesson").onclick=()=>switchView("lesson");
+$("omiRedraw").onclick=redrawOmikuji;
+$("omiBody").onclick=()=>{const k=$("omikuji").dataset.key;if(k)openDay(k);};
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)refreshToday();});
+window.addEventListener("focus",refreshToday);
+window.addEventListener("pageshow",refreshToday);
 }
 
 (async function init(){
 entries=await storeGet();
 const t=parse(todayKey);viewY=t.getFullYear();viewM=t.getMonth();
-bind();renderStreak();renderCard();renderCal();
+bind();renderStreak();renderCard();renderCal();renderFoot();renderOmikuji();
+// データを消されにくくするようブラウザに頼む (iOSホーム画面アプリで特に効く)
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();}catch(e){}
 })();
 </script>
 </body>
